@@ -75,21 +75,70 @@ if uploaded_file is not None:
             df[["recommended_action", "expected_value"]] = df.apply(pick_action, axis=1)
             df = df.sort_values("expected_value", ascending=False)
 
-            total_ev = df["expected_value"].sum()
-            n_targeted = (df["recommended_action"] != "no_action").sum()
+            # --- Budget constraint ---
+            # Without a budget cap, "value-based" and "naive churn-probability"
+            # targeting tend to converge, since almost every customer looks
+            # profitable to target. The real case for value-based targeting
+            # shows up when you can't target everyone — this slider makes
+            # that constraint explicit and shows the resulting gap.
+            st.subheader("Retention budget")
+            max_budget = len(df)
+            default_budget = min(200, max_budget)
+            budget = st.slider(
+                "How many customers can you afford to target this cycle?",
+                min_value=1,
+                max_value=max_budget,
+                value=default_budget,
+                step=1,
+                help="Personalized retention outreach doesn't scale infinitely — "
+                     "this simulates a realistic cap on how many customers your "
+                     "team can actually act on.",
+            )
+
+            smart_targets = df.sort_values("expected_value", ascending=False).head(budget)
+            smart_ev = smart_targets["expected_value"].sum()
+
+            naive_targets = df.sort_values("churn_prob", ascending=False).head(budget)
+            naive_ev = naive_targets["expected_value"].sum()
+
+            improvement = smart_ev - naive_ev
+            pct_improvement = (improvement / naive_ev * 100) if naive_ev != 0 else 0.0
+            overlap = len(set(smart_targets.index) & set(naive_targets.index))
+            overlap_pct = overlap / budget * 100 if budget > 0 else 0.0
 
             col1, col2, col3 = st.columns(3)
-            col1.metric("Customers evaluated", len(df))
-            col2.metric("Worth targeting", n_targeted)
-            col3.metric("Total expected value saved", f"${total_ev:,.0f}")
+            col1.metric("Value-based targeting", f"${smart_ev:,.0f}")
+            col2.metric(
+                "Naive (churn prob only)", f"${naive_ev:,.0f}",
+                delta=f"{pct_improvement:+.1f}% vs. value-based" if naive_ev else None,
+                delta_color="inverse",
+            )
+            col3.metric("Target list overlap", f"{overlap_pct:.0f}%",
+                        help="How many of the same customers both strategies would target. "
+                             "Lower overlap means the two rankings disagree more — and "
+                             "that disagreement is where value-based targeting earns its keep.")
 
-            st.subheader("Ranked action plan")
+            if pct_improvement > 0:
+                st.success(
+                    f"At a budget of {budget} customers, ranking by expected value "
+                    f"captures **{pct_improvement:.1f}% more** revenue than ranking by "
+                    f"churn probability alone — by choosing higher-CLV customers the "
+                    f"naive approach would have missed."
+                )
+            elif budget >= max_budget * 0.9:
+                st.info(
+                    "At this budget size, nearly every customer is being targeted "
+                    "under both strategies, so they converge. Try a smaller budget "
+                    "to see the gap open up."
+                )
+
+            st.subheader(f"Ranked action plan (top {budget} by expected value)")
             display_cols = [
                 "churn_prob", "CLV", "recommended_action", "expected_value"
             ]
             display_cols = [c for c in display_cols if c in df.columns]
             st.dataframe(
-                df[display_cols].style.format({
+                smart_targets[display_cols].style.format({
                     "churn_prob": "{:.1%}",
                     "CLV": "${:,.0f}",
                     "expected_value": "${:,.0f}",
@@ -98,8 +147,8 @@ if uploaded_file is not None:
             )
 
             st.download_button(
-                "Download full action plan as CSV",
-                df.to_csv(index=False),
+                "Download this action plan as CSV",
+                smart_targets.to_csv(index=False),
                 "intervention_plan.csv",
                 "text/csv",
             )
