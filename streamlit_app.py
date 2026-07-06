@@ -14,7 +14,10 @@ Run locally:
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
+import shap
+import matplotlib.pyplot as plt
 import sys
 import os
 
@@ -152,6 +155,79 @@ if uploaded_file is not None:
                 "intervention_plan.csv",
                 "text/csv",
             )
+
+            # --- Per-customer explanation (SHAP) ---
+            # Answers "why did the model flag THIS customer?" instead of
+            # just handing back a probability. This is what turns the tool
+            # from a scorer into something a retention rep could actually
+            # use to have an informed conversation with a customer.
+            st.subheader("Explain a specific customer's prediction")
+
+            @st.cache_resource
+            def get_explainer(_model, _X_ref):
+                preprocessor = _model.named_steps["prep"]
+                classifier = _model.named_steps["clf"]
+                X_ref_transformed = preprocessor.transform(_X_ref)
+                if hasattr(X_ref_transformed, "toarray"):
+                    X_ref_transformed = X_ref_transformed.toarray()
+                num_names = [c for c in feature_cols if c not in
+                             ["Contract", "InternetService", "PaymentMethod", "tenure_bucket"]]
+                cat_encoder = preprocessor.named_transformers_["cat"]
+                cat_cols = ["Contract", "InternetService", "PaymentMethod", "tenure_bucket"]
+                cat_names = list(cat_encoder.get_feature_names_out(cat_cols))
+                names = num_names + cat_names
+                explainer = shap.TreeExplainer(classifier)
+                return explainer, names
+
+            try:
+                explainer, transformed_names = get_explainer(model, df[feature_cols])
+
+                display_options = smart_targets.head(50).index.tolist()
+                if display_options:
+                    chosen_idx = st.selectbox(
+                        "Pick a customer from the target list above to explain "
+                        "(showing top 50 by expected value):",
+                        options=display_options,
+                        format_func=lambda i: (
+                            f"Row {i} — churn prob {df.loc[i, 'churn_prob']:.0%}, "
+                            f"CLV ${df.loc[i, 'CLV']:,.0f}, "
+                            f"action: {df.loc[i, 'recommended_action']}"
+                        ),
+                    )
+
+                    preprocessor = model.named_steps["prep"]
+                    row_transformed = preprocessor.transform(df.loc[[chosen_idx], feature_cols])
+                    if hasattr(row_transformed, "toarray"):
+                        row_transformed = row_transformed.toarray()
+
+                    shap_vals = explainer.shap_values(row_transformed)
+                    row_shap = shap_vals[0]
+
+                    contrib_df = pd.DataFrame({
+                        "feature": transformed_names,
+                        "impact": row_shap,
+                    })
+                    contrib_df["abs_impact"] = contrib_df["impact"].abs()
+                    contrib_df = contrib_df.sort_values("abs_impact", ascending=False).head(10)
+                    contrib_df["direction"] = contrib_df["impact"].apply(
+                        lambda v: "increases churn risk" if v > 0 else "decreases churn risk"
+                    )
+
+                    fig, ax = plt.subplots(figsize=(8, 5))
+                    colors = ["#d62728" if v > 0 else "#2ca02c" for v in contrib_df["impact"]]
+                    ax.barh(contrib_df["feature"][::-1], contrib_df["impact"][::-1], color=colors[::-1])
+                    ax.set_xlabel("Impact on churn probability (SHAP value)")
+                    ax.set_title(f"Top factors for customer at row {chosen_idx}")
+                    ax.axvline(0, color="gray", linewidth=0.8)
+                    st.pyplot(fig)
+
+                    st.caption(
+                        "Red bars push this customer's churn probability up; "
+                        "green bars pull it down. This is what a retention rep "
+                        "could point to when deciding how to approach the conversation."
+                    )
+            except Exception as e:
+                st.warning(f"Couldn't generate explanation for this dataset: {e}")
     else:
         st.warning(
             "No trained model found at data/model.joblib. "

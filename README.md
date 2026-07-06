@@ -17,7 +17,8 @@ churn-roi/
 │   ├── features.py            # feature engineering
 │   ├── train.py               # model training + comparison
 │   ├── simulate.py            # intervention value simulation (budget-constrained)
-│   └── budget_sensitivity.py  # compares strategies across a range of budget sizes
+│   ├── budget_sensitivity.py  # compares strategies across a range of budget sizes
+│   └── explain.py             # SHAP feature importance + per-customer explanations
 ├── app/
 │   └── streamlit_app.py   # deployable demo app
 ├── notebooks/
@@ -49,6 +50,7 @@ python src/features.py            # feature engineering
 python src/train.py               # trains + compares models
 python src/simulate.py            # runs intervention value simulation
 python src/budget_sensitivity.py  # compares strategies across budget sizes, saves a chart
+python src/explain.py             # SHAP feature importance + a per-customer explanation
 ```
 
 ## Step 3: Run the app
