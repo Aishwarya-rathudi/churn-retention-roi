@@ -18,7 +18,9 @@ churn-roi/
 │   ├── train.py               # model training + comparison
 │   ├── simulate.py            # intervention value simulation (budget-constrained)
 │   ├── budget_sensitivity.py  # compares strategies across a range of budget sizes
-│   └── explain.py             # SHAP feature importance + per-customer explanations
+│   ├── explain.py             # SHAP feature importance + per-customer explanations
+│   ├── uplift.py              # causal uplift modeling (T-learner) + Qini evaluation
+│   └── genai_agent.py         # Q&A agent (tool-calling) + outreach message generator
 ├── app/
 │   └── streamlit_app.py   # deployable demo app
 ├── notebooks/
@@ -51,7 +53,30 @@ python src/train.py               # trains + compares models
 python src/simulate.py            # runs intervention value simulation
 python src/budget_sensitivity.py  # compares strategies across budget sizes, saves a chart
 python src/explain.py             # SHAP feature importance + a per-customer explanation
+python src/uplift.py              # causal uplift modeling (T-learner) + Qini curve
 ```
+
+## Step 2b: GenAI agent setup (optional)
+The Q&A agent and outreach message generator use the Anthropic API and need
+your own API key.
+
+1. Get a key from [console.anthropic.com](https://console.anthropic.com)
+2. Set it as an environment variable:
+   ```powershell
+   # Windows PowerShell
+   $env:ANTHROPIC_API_KEY = "sk-ant-..."
+   ```
+   ```bash
+   # Mac/Linux
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+3. Run the demo:
+   ```bash
+   python src/genai_agent.py
+   ```
+   This asks two example questions grounded in your actual data (via real
+   tool-calling, not the model guessing), then drafts an example retention
+   email using a customer's profile and SHAP explanation.
 
 ## Step 3: Run the app
 ```bash
@@ -103,10 +128,45 @@ real prioritization decision left to make.
 - **No live validation** — this shows the *expected* value of smarter targeting
   under stated assumptions, not a measured causal lift from an actual intervention.
 
-## Next steps
-- Replace assumed effectiveness rates with estimates from a real or simulated
-  A/B test comparing "received discount" vs. "no action" outcomes.
-- Model diminishing returns — after enough discounts, the assumption that the
-  35% effectiveness rate holds uniformly likely breaks down.
-- Extend to multi-period simulation: what happens to expected value if the same
-  200-customer budget is applied every month for a year?
+## Uplift modeling: a sharper version of "who's worth targeting"
+
+`simulate.py` assumes every customer responds to a discount at the same
+rate (e.g., "35% effectiveness for everyone"). `uplift.py` replaces that
+assumption with an individualized estimate: a **T-learner** (two separately
+trained models — one on treated customers, one on control) predicts each
+customer's specific reduction in churn probability if given a discount.
+
+This surfaces a pattern a fixed-rate assumption can't: **some customers'
+predicted uplift is negative** — the model estimates the discount would
+make them *more* likely to churn (e.g., customers who weren't price-sensitive
+in the first place, for whom a discount offer draws attention to price they
+weren't otherwise thinking about). Fixed-effectiveness targeting has no way
+to catch this; individualized uplift modeling does.
+
+**Evaluation:** since real ground-truth treatment effects are never
+observable per-customer (a customer either got the discount or didn't,
+never both), uplift models are evaluated with a **Qini curve** — cumulative
+incremental churns avoided when targeting by predicted uplift vs. random
+targeting. A curve that bows above the random line means the ranking is
+finding real signal, not noise.
+
+**Honest caveat:** this uses a *simulated* treatment/control dataset (since
+a real historical A/B test wasn't available). The correlation check in
+`uplift.py` output validates that the model recovers the *simulated* ground
+truth reasonably well — in a real deployment, the Qini curve on a real
+historical experiment would be the actual evidence, not this correlation.
+
+## GenAI agent layer
+
+Two features built on top of the model, using the Anthropic API:
+
+- **Q&A agent** (`ask_question` in `genai_agent.py`) — uses real tool-calling:
+  Claude decides which aggregation to run against the actual customer
+  dataframe (via a whitelisted `query_dataframe` tool, not arbitrary code
+  execution), and answers using the real numbers returned. This keeps
+  answers grounded in your actual data rather than the model guessing.
+- **Outreach message generator** (`generate_outreach_message`) — takes a
+  customer's profile, their top SHAP factors, and the recommended retention
+  action, and drafts a short, personalized email a retention rep could
+  actually send — closing the loop from "here's a risky customer" to
+  "here's what to say to them."
