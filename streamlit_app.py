@@ -24,6 +24,7 @@ from groq import Groq
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from genai_agent import ask_question, generate_outreach_message
+from action_optimizer import add_action_recommendations, action_menu_summary, ACTIONS
 
 st.set_page_config(page_title="Churn Intervention Planner", layout="wide")
 
@@ -75,26 +76,33 @@ if uploaded_file is not None:
         else:
             df["churn_prob"] = model.predict_proba(df[feature_cols])[:, 1]
 
-            # Expected value calc (mirrors simulate.py)
-            DISCOUNT_EFFECTIVENESS = 0.35
-            OUTREACH_EFFECTIVENESS = 0.15
-
-            df["ev_discount"] = (
-                df["churn_prob"] * DISCOUNT_EFFECTIVENESS * df["CLV"] - df["cost_discount"]
+            # --- Multi-action optimizer ---
+            # Instead of a hardcoded binary choice (discount vs. outreach),
+            # evaluate a full menu of retention actions and pick whichever
+            # has the best expected return for each customer. See
+            # src/action_optimizer.py for the menu and the two optimization
+            # modes (max total value vs. max ROI per dollar spent).
+            st.subheader("Retention action menu")
+            st.caption(
+                "Costs and effectiveness rates below are assumptions — replace "
+                "with real historical campaign data when available."
             )
-            df["ev_outreach"] = (
-                df["churn_prob"] * OUTREACH_EFFECTIVENESS * df["CLV"] - df["cost_outreach"]
+            st.dataframe(action_menu_summary(), use_container_width=True, hide_index=True)
+
+            opt_mode_label = st.radio(
+                "Optimization goal",
+                options=["Maximize total value per customer", "Maximize ROI (return per dollar spent)"],
+                help=(
+                    "Maximize total value: best when each customer's action is funded "
+                    "independently (no shared budget). "
+                    "Maximize ROI: best under a limited shared budget, since cheap, "
+                    "efficient actions let you afford to treat more customers overall."
+                ),
+                horizontal=True,
             )
+            opt_mode = "max_value" if opt_mode_label.startswith("Maximize total") else "max_roi"
 
-            def pick_action(row):
-                options = {"discount": row["ev_discount"], "outreach": row["ev_outreach"]}
-                best_action = max(options, key=options.get)
-                best_value = options[best_action]
-                if best_value <= 0:
-                    return pd.Series(["no_action", 0.0])
-                return pd.Series([best_action, best_value])
-
-            df[["recommended_action", "expected_value"]] = df.apply(pick_action, axis=1)
+            df = add_action_recommendations(df, ACTIONS, optimization_mode=opt_mode)
             df = df.sort_values("expected_value", ascending=False)
 
             # --- Budget constraint ---
@@ -139,6 +147,41 @@ if uploaded_file is not None:
                         help="How many of the same customers both strategies would target. "
                              "Lower overlap means the two rankings disagree more — and "
                              "that disagreement is where value-based targeting earns its keep.")
+
+            # --- Diminishing returns chart ---
+            # A single budget number doesn't show the shape of the tradeoff.
+            # This chart shows expected revenue saved across a full range of
+            # budget sizes, so a manager can see the diminishing-returns
+            # curve directly instead of one point on it.
+            st.subheader("Revenue saved vs. customers targeted")
+            checkpoints = sorted(set(
+                [int(max_budget * p) for p in [0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]]
+                + [budget]
+            ))
+            checkpoints = [c for c in checkpoints if c > 0]
+
+            curve_df = pd.DataFrame({
+                "customers_targeted": checkpoints,
+                "revenue_saved": [
+                    df.sort_values("expected_value", ascending=False).head(c)["expected_value"].sum()
+                    for c in checkpoints
+                ],
+            })
+
+            fig_curve, ax_curve = plt.subplots(figsize=(9, 4))
+            ax_curve.plot(curve_df["customers_targeted"], curve_df["revenue_saved"], marker="o")
+            ax_curve.axvline(budget, color="gray", linestyle="--", alpha=0.6, label=f"Current budget ({budget})")
+            ax_curve.set_xlabel("Customers targeted")
+            ax_curve.set_ylabel("Expected revenue saved ($)")
+            ax_curve.set_title("Diminishing Returns: More Budget Helps, But Less at the Margin")
+            ax_curve.legend()
+            ax_curve.grid(alpha=0.3)
+            st.pyplot(fig_curve)
+            st.caption(
+                "The curve flattens as budget grows — each additional customer "
+                "targeted contributes less than the last, since customers are "
+                "targeted in order of expected value (highest first)."
+            )
 
             if pct_improvement > 0:
                 st.success(
