@@ -80,6 +80,58 @@ def query_dataframe(df: pd.DataFrame, group_by: str, metric: str) -> dict:
     return {"group_by": group_by, "metric": metric, "results": result.round(4).to_dict()}
 
 
+def calculate_max_discount(clv: float, success_probability: float, campaign_cost: float) -> dict:
+    """
+    Computes the maximum discount (in dollars) that can be offered to a
+    customer without the retention action becoming a net loss.
+
+    Formula: max_discount = (CLV * success_probability) - campaign_cost
+
+    This exists specifically so the agent NEVER free-generates this number.
+    Business-critical math like "how much can we afford to discount" must
+    come from a deterministic calculation, not a language model's guess —
+    an LLM asked this directly will often invent plausible-sounding but
+    wrong numbers with no grounding in the actual CLV or cost figures.
+    """
+    max_discount = (clv * success_probability) - campaign_cost
+    return {
+        "clv": clv,
+        "success_probability": success_probability,
+        "campaign_cost": campaign_cost,
+        "expected_value_if_saved": round(clv * success_probability, 2),
+        "max_discount": round(max_discount, 2),
+        "formula": "max_discount = (CLV * success_probability) - campaign_cost",
+        "note": (
+            "Any discount at or below this amount keeps the expected value "
+            "of the retention action non-negative. Above this amount, the "
+            "expected cost of the discount exceeds the expected value of "
+            "retaining the customer."
+        ),
+    }
+
+
+def calculate_action_roi(clv: float, success_probability: float, action_cost: float) -> dict:
+    """
+    Computes expected value and ROI for a single retention action.
+
+    expected_value = (clv * success_probability) - action_cost
+    roi = expected_value / action_cost   (return per dollar spent)
+
+    Same rationale as calculate_max_discount: exact numeric answers about
+    cost-effectiveness must be computed, never generated freehand.
+    """
+    expected_value = (clv * success_probability) - action_cost
+    roi = (expected_value / action_cost) if action_cost > 0 else None
+    return {
+        "clv": clv,
+        "success_probability": success_probability,
+        "action_cost": action_cost,
+        "expected_value": round(expected_value, 2),
+        "roi": round(roi, 3) if roi is not None else None,
+        "formula": "expected_value = (CLV * success_probability) - action_cost; roi = expected_value / action_cost",
+    }
+
+
 # Groq uses the OpenAI-compatible tool schema format
 TOOLS = [
     {
@@ -108,19 +160,94 @@ TOOLS = [
                 "required": ["group_by", "metric"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_max_discount",
+            "description": (
+                "Calculates the exact maximum discount (in dollars) that can be "
+                "offered to a customer without the retention action resulting in a "
+                "net loss. ALWAYS use this tool for any question about maximum "
+                "discount, break-even discount, or 'how much can we afford to "
+                "offer' — never estimate or guess this number directly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clv": {"type": "number", "description": "Customer lifetime value in dollars."},
+                    "success_probability": {
+                        "type": "number",
+                        "description": "Probability the retention action successfully prevents churn (0 to 1).",
+                    },
+                    "campaign_cost": {
+                        "type": "number",
+                        "description": "Fixed cost of running the retention campaign, in dollars (not counting the discount itself).",
+                    },
+                },
+                "required": ["clv", "success_probability", "campaign_cost"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_action_roi",
+            "description": (
+                "Calculates exact expected value and ROI for a retention action "
+                "given its cost and success probability. ALWAYS use this tool for "
+                "any question comparing retention actions, computing ROI, or "
+                "asking whether an action is worth the cost — never estimate "
+                "these numbers directly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clv": {"type": "number", "description": "Customer lifetime value in dollars."},
+                    "success_probability": {
+                        "type": "number",
+                        "description": "Probability the action successfully prevents churn (0 to 1).",
+                    },
+                    "action_cost": {"type": "number", "description": "Cost of the action in dollars."},
+                },
+                "required": ["clv", "success_probability", "action_cost"],
+            },
+        },
+    },
 ]
+
+SYSTEM_PROMPT = """You are a data analyst assistant for a customer retention system.
+
+CRITICAL RULE: for ANY question involving a specific dollar amount, percentage,
+discount, ROI, or break-even calculation, you MUST call the appropriate tool
+(calculate_max_discount, calculate_action_roi, or query_dataframe). NEVER
+compute or estimate these numbers yourself in your head — always use a tool,
+even if you think you know the answer. If the question doesn't give you
+enough information to call a tool (e.g. no CLV or cost figures were
+provided), ask the user for the missing numbers rather than guessing typical
+values.
+
+When you do have a tool result, explain it in plain language, but the
+number itself must always come from the tool's output, never from your own
+estimation."""
 
 
 def ask_question(question: str, df: pd.DataFrame, client: Groq = None) -> str:
     """
-    Agentic Q&A loop: send the question + tool definition to the model,
-    execute any tool calls it makes against the real dataframe, feed
-    results back, and return the final grounded answer.
+    Agentic Q&A loop: send the question + tool definitions to the model,
+    execute any tool calls it makes (against the real dataframe, or via
+    exact calculation functions for business math), feed results back, and
+    return the final grounded answer. A system prompt forces the model to
+    use the calculation tools for any numeric business question instead of
+    generating numbers freehand — see calculate_max_discount's docstring
+    for why this matters.
     """
     client = client or get_client()
 
-    messages = [{"role": "user", "content": question}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
 
     response = client.chat.completions.create(
         model=MODEL_NAME, messages=messages, tools=TOOLS, tool_choice="auto",
@@ -136,9 +263,13 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None) -> str:
         messages.append(message)
 
         for tool_call in message.tool_calls:
+            args = json.loads(tool_call.function.arguments)
             if tool_call.function.name == "query_dataframe":
-                args = json.loads(tool_call.function.arguments)
                 result = query_dataframe(df, **args)
+            elif tool_call.function.name == "calculate_max_discount":
+                result = calculate_max_discount(**args)
+            elif tool_call.function.name == "calculate_action_roi":
+                result = calculate_action_roi(**args)
             else:
                 result = {"error": f"Unknown tool: {tool_call.function.name}"}
 
