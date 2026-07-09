@@ -57,20 +57,20 @@ python src/uplift.py              # causal uplift modeling (T-learner) + Qini cu
 ```
 
 ## Step 2b: GenAI agent setup (optional, free)
-The Q&A agent and outreach message generator use Google's Gemini API,
-which has a genuine free tier (no billing required) for the Flash model
-used here.
+The Q&A agent and outreach message generator use Groq's API, which is
+free (no billing required) and runs open models like Llama 3.3 with very
+fast inference.
 
-1. Get a free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-   (just needs a Google account, no credit card)
+1. Get a free key from [console.groq.com/keys](https://console.groq.com/keys)
+   (just needs an account, no credit card)
 2. Set it as an environment variable:
    ```powershell
    # Windows PowerShell
-   $env:GEMINI_API_KEY = "AIza..."
+   $env:GROQ_API_KEY = "gsk_..."
    ```
    ```bash
    # Mac/Linux
-   export GEMINI_API_KEY="AIza..."
+   export GROQ_API_KEY="gsk_..."
    ```
 3. Run the demo:
    ```bash
@@ -80,10 +80,9 @@ used here.
    tool-calling, not the model guessing), then drafts an example retention
    email using a customer's profile and SHAP explanation.
 
-**Note:** the free tier has a daily request limit (check your current
-quota at [Google AI Studio](https://aistudio.google.com)) — plenty for
-demoing this project, but if you hit a rate limit error, just wait a bit
-or check your quota dashboard.
+**Note:** the free tier has a per-minute rate limit — plenty for demoing
+this project, but if you hit a rate limit error, just wait a few seconds
+and retry.
 
 ## Step 3: Run the app
 ```bash
@@ -165,10 +164,10 @@ historical experiment would be the actual evidence, not this correlation.
 
 ## GenAI agent layer
 
-Two features built on top of the model, using Google's Gemini API (free tier):
+Two features built on top of the model, using Groq's API (free tier):
 
 - **Q&A agent** (`ask_question` in `genai_agent.py`) — uses real tool-calling:
-  Gemini decides which aggregation to run against the actual customer
+  the model decides which aggregation to run against the actual customer
   dataframe (via a whitelisted `query_dataframe` function, not arbitrary code
   execution), and answers using the real numbers returned. This keeps
   answers grounded in your actual data rather than the model guessing.
