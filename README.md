@@ -56,19 +56,21 @@ python src/explain.py             # SHAP feature importance + a per-customer exp
 python src/uplift.py              # causal uplift modeling (T-learner) + Qini curve
 ```
 
-## Step 2b: GenAI agent setup (optional)
-The Q&A agent and outreach message generator use the Anthropic API and need
-your own API key.
+## Step 2b: GenAI agent setup (optional, free)
+The Q&A agent and outreach message generator use Google's Gemini API,
+which has a genuine free tier (no billing required) for the Flash model
+used here.
 
-1. Get a key from [console.anthropic.com](https://console.anthropic.com)
+1. Get a free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+   (just needs a Google account, no credit card)
 2. Set it as an environment variable:
    ```powershell
    # Windows PowerShell
-   $env:ANTHROPIC_API_KEY = "sk-ant-..."
+   $env:GEMINI_API_KEY = "AIza..."
    ```
    ```bash
    # Mac/Linux
-   export ANTHROPIC_API_KEY="sk-ant-..."
+   export GEMINI_API_KEY="AIza..."
    ```
 3. Run the demo:
    ```bash
@@ -77,6 +79,11 @@ your own API key.
    This asks two example questions grounded in your actual data (via real
    tool-calling, not the model guessing), then drafts an example retention
    email using a customer's profile and SHAP explanation.
+
+**Note:** the free tier has a daily request limit (check your current
+quota at [Google AI Studio](https://aistudio.google.com)) — plenty for
+demoing this project, but if you hit a rate limit error, just wait a bit
+or check your quota dashboard.
 
 ## Step 3: Run the app
 ```bash
@@ -158,11 +165,11 @@ historical experiment would be the actual evidence, not this correlation.
 
 ## GenAI agent layer
 
-Two features built on top of the model, using the Anthropic API:
+Two features built on top of the model, using Google's Gemini API (free tier):
 
 - **Q&A agent** (`ask_question` in `genai_agent.py`) — uses real tool-calling:
-  Claude decides which aggregation to run against the actual customer
-  dataframe (via a whitelisted `query_dataframe` tool, not arbitrary code
+  Gemini decides which aggregation to run against the actual customer
+  dataframe (via a whitelisted `query_dataframe` function, not arbitrary code
   execution), and answers using the real numbers returned. This keeps
   answers grounded in your actual data rather than the model guessing.
 - **Outreach message generator** (`generate_outreach_message`) — takes a

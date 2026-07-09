@@ -6,9 +6,9 @@ Two GenAI-powered features on top of the churn model:
 1. Q&A AGENT — ask natural-language questions about your results
    ("why is churn high among month-to-month customers?") and get answers
    grounded in your ACTUAL data, not the model's guesses. This uses real
-   tool-calling (function calling): Claude decides which whitelisted
+   tool-calling (function calling): Gemini decides which whitelisted
    aggregation to run against your dataframe, the code executes it, and
-   Claude answers using the real numbers that come back. This is the
+   Gemini answers using the real numbers that come back. This is the
    core "agent" pattern — plan, call a tool, use the result, respond.
 
 2. OUTREACH MESSAGE GENERATOR — takes one customer's profile, their SHAP
@@ -16,22 +16,25 @@ Two GenAI-powered features on top of the churn model:
    and drafts a short, personalized retention email a rep could actually
    send.
 
+Uses Google's Gemini API (free tier — no billing required for the
+Flash models used here, within the daily free quota).
+
 SETUP REQUIRED:
-   You need an Anthropic API key: https://console.anthropic.com
-   Set it as an environment variable before running:
-       Windows (PowerShell):  $env:ANTHROPIC_API_KEY = "sk-ant-..."
-       Mac/Linux:              export ANTHROPIC_API_KEY="sk-ant-..."
+   1. Get a free API key: https://aistudio.google.com/apikey
+   2. Set it as an environment variable before running:
+       Windows (PowerShell):  $env:GEMINI_API_KEY = "AIza..."
+       Mac/Linux:              export GEMINI_API_KEY="AIza..."
 
 Run:
     python src/genai_agent.py
 """
 
 import os
-import json
 import pandas as pd
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 
-MODEL_NAME = "claude-sonnet-4-6"
+MODEL_NAME = "gemini-2.5-flash"  # has a free tier; no billing required
 
 DATA_PATH = "data/featured_telco.csv"
 
@@ -42,14 +45,14 @@ DATA_PATH = "data/featured_telco.csv"
 GROUPABLE_COLUMNS = ["Contract", "PaymentMethod", "tenure_bucket", "InternetService"]
 
 
-def get_client() -> Anthropic:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+def get_client() -> genai.Client:
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY environment variable not set. "
-            "Get a key from https://console.anthropic.com and set it before running this script."
+            "GEMINI_API_KEY environment variable not set. "
+            "Get a free key from https://aistudio.google.com/apikey and set it before running this script."
         )
-    return Anthropic(api_key=api_key)
+    return genai.Client(api_key=api_key)
 
 
 # --- Tool implementation: the actual pandas logic the agent can call ---
@@ -77,15 +80,16 @@ def query_dataframe(df: pd.DataFrame, group_by: str, metric: str) -> dict:
     return {"group_by": group_by, "metric": metric, "results": result.round(4).to_dict()}
 
 
-TOOLS = [
-    {
-        "name": "query_dataframe",
-        "description": (
+# Gemini function declaration (its version of a tool schema)
+QUERY_TOOL = types.Tool(function_declarations=[
+    types.FunctionDeclaration(
+        name="query_dataframe",
+        description=(
             "Get aggregated statistics from the customer dataset, grouped by a "
             "column. Use this to answer any question about patterns in the data "
             "(e.g. churn rate by contract type, average CLV by payment method)."
         ),
-        "input_schema": {
+        parameters={
             "type": "object",
             "properties": {
                 "group_by": {
@@ -101,65 +105,59 @@ TOOLS = [
             },
             "required": ["group_by", "metric"],
         },
-    }
-]
+    )
+])
 
 
-def ask_question(question: str, df: pd.DataFrame, client: Anthropic = None) -> str:
+def ask_question(question: str, df: pd.DataFrame, client: genai.Client = None) -> str:
     """
-    Agentic Q&A loop: send the question + tool definition to Claude, execute
-    any tool calls it makes against the real dataframe, feed results back,
-    and return the final grounded answer.
+    Agentic Q&A loop: send the question + tool definition to Gemini, execute
+    any function calls it makes against the real dataframe, feed results
+    back, and return the final grounded answer.
     """
     client = client or get_client()
+    config = types.GenerateContentConfig(tools=[QUERY_TOOL])
 
-    messages = [{"role": "user", "content": question}]
+    contents = [types.Content(role="user", parts=[types.Part(text=question)])]
 
-    response = client.messages.create(
-        model=MODEL_NAME,
-        max_tokens=1000,
-        tools=TOOLS,
-        messages=messages,
+    response = client.models.generate_content(
+        model=MODEL_NAME, contents=contents, config=config,
     )
 
-    # Agent loop: keep executing tool calls until Claude gives a final text answer
-    while response.stop_reason == "tool_use":
-        messages.append({"role": "assistant", "content": response.content})
+    # Agent loop: keep executing function calls until Gemini gives a final text answer
+    max_turns = 5
+    for _ in range(max_turns):
+        candidate_parts = response.candidates[0].content.parts
+        function_call_part = next(
+            (p for p in candidate_parts if getattr(p, "function_call", None)), None
+        )
+        if function_call_part is None:
+            break  # model returned a final text answer
 
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                if block.name == "query_dataframe":
-                    result = query_dataframe(df, **block.input)
-                else:
-                    result = {"error": f"Unknown tool: {block.name}"}
+        fn = function_call_part.function_call
+        if fn.name == "query_dataframe":
+            result = query_dataframe(df, **dict(fn.args))
+        else:
+            result = {"error": f"Unknown tool: {fn.name}"}
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result),
-                })
+        contents.append(response.candidates[0].content)  # the model's function-call turn
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part.from_function_response(name=fn.name, response={"result": result})],
+        ))
 
-        messages.append({"role": "user", "content": tool_results})
-
-        response = client.messages.create(
-            model=MODEL_NAME,
-            max_tokens=1000,
-            tools=TOOLS,
-            messages=messages,
+        response = client.models.generate_content(
+            model=MODEL_NAME, contents=contents, config=config,
         )
 
-    final_text = "".join(
-        block.text for block in response.content if block.type == "text"
-    )
-    return final_text
+    return response.text
 
 
 def generate_outreach_message(
     customer: dict,
     top_factors: list,
     recommended_action: str,
-    client: Anthropic = None,
+    client: genai.Client = None,
 ) -> str:
     """
     Drafts a short, personalized retention email using the customer's
@@ -191,12 +189,8 @@ Write a short email (under 150 words) that:
 
 Return only the email body, no subject line, no preamble."""
 
-    response = client.messages.create(
-        model=MODEL_NAME,
-        max_tokens=400,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+    response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    return response.text
 
 
 def main():
