@@ -20,8 +20,10 @@ import shap
 import matplotlib.pyplot as plt
 import sys
 import os
+from groq import Groq
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
+from genai_agent import ask_question, generate_outreach_message
 
 st.set_page_config(page_title="Churn Intervention Planner", layout="wide")
 
@@ -33,6 +35,23 @@ st.markdown(
     retention action gives the best expected return.
     """
 )
+
+# --- GenAI agent setup (optional) ---
+# Free via Groq (https://console.groq.com/keys) — no billing required.
+# Key is only held in this session's memory, never written to disk.
+with st.sidebar:
+    st.header("GenAI agent (optional)")
+    st.caption(
+        "Powers the Q&A agent and outreach message generator below. "
+        "Free tier — get a key at console.groq.com/keys"
+    )
+    groq_api_key = st.text_input(
+        "Groq API key", type="password",
+        value=os.environ.get("GROQ_API_KEY", ""),
+        help="Never stored — only kept in memory for this session.",
+    )
+
+groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 MODEL_PATH = "data/model.joblib"
 
@@ -226,8 +245,51 @@ if uploaded_file is not None:
                         "green bars pull it down. This is what a retention rep "
                         "could point to when deciding how to approach the conversation."
                     )
+
+                    # --- Outreach message generator ---
+                    st.subheader("Draft a retention email for this customer")
+                    if groq_client is None:
+                        st.info("Enter a free Groq API key in the sidebar to generate a message.")
+                    else:
+                        if st.button("Generate outreach email"):
+                            with st.spinner("Drafting message..."):
+                                top_factors = [
+                                    (row["feature"], row["direction"])
+                                    for _, row in contrib_df.head(3).iterrows()
+                                ]
+                                customer_dict = df.loc[chosen_idx].to_dict()
+                                action = df.loc[chosen_idx, "recommended_action"]
+                                try:
+                                    email_text = generate_outreach_message(
+                                        customer_dict, top_factors, action, groq_client
+                                    )
+                                    st.text_area("Draft email", email_text, height=250)
+                                except Exception as e:
+                                    st.error(f"Couldn't generate message: {e}")
             except Exception as e:
                 st.warning(f"Couldn't generate explanation for this dataset: {e}")
+
+            # --- Q&A agent ---
+            # Real tool-calling: the model decides which aggregation to run
+            # against the actual uploaded dataframe, and answers using the
+            # real numbers returned — not a guess from training data.
+            st.subheader("Ask a question about this data")
+            if groq_client is None:
+                st.info("Enter a free Groq API key in the sidebar to use the Q&A agent.")
+            else:
+                example_qs = (
+                    "Try: \"Which contract type has the highest churn rate?\" or "
+                    "\"What's the average CLV for customers with fiber internet?\""
+                )
+                st.caption(example_qs)
+                question = st.text_input("Your question")
+                if st.button("Ask") and question:
+                    with st.spinner("Thinking..."):
+                        try:
+                            answer = ask_question(question, df, groq_client)
+                            st.write(answer)
+                        except Exception as e:
+                            st.error(f"Couldn't answer that: {e}")
     else:
         st.warning(
             "No trained model found at data/model.joblib. "
