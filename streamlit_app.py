@@ -25,6 +25,7 @@ from groq import Groq
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from genai_agent import ask_question, generate_outreach_message
 from action_optimizer import add_action_recommendations, action_menu_summary, ACTIONS
+from uncertainty import simulate_revenue_distribution
 
 st.set_page_config(page_title="Churn Intervention Planner", layout="wide")
 
@@ -147,6 +148,35 @@ if uploaded_file is not None:
                         help="How many of the same customers both strategies would target. "
                              "Lower overlap means the two rankings disagree more — and "
                              "that disagreement is where value-based targeting earns its keep.")
+
+            # --- Confidence interval on revenue saved ---
+            # expected_value is a mean, not a guarantee — churn is a coin
+            # flip per customer, and the action's success is another coin
+            # flip. Monte Carlo simulation over both sources of randomness
+            # gives an honest range instead of a falsely precise single number.
+            with st.expander("Show confidence interval (Monte Carlo simulation)"):
+                sim_df = smart_targets.copy()
+                sim_df["_effectiveness"] = sim_df["recommended_action"].map(
+                    lambda a: ACTIONS.get(a, {}).get("effectiveness", 0.0)
+                )
+                sim_df["_cost"] = sim_df["recommended_action"].map(
+                    lambda a: ACTIONS.get(a, {}).get("cost", 0.0)
+                )
+                sim_summary = simulate_revenue_distribution(
+                    sim_df, effectiveness_col="_effectiveness", cost_col="_cost",
+                )
+                ci_col1, ci_col2 = st.columns(2)
+                ci_col1.metric("Expected revenue (mean of simulation)", f"${sim_summary['mean']:,.0f}")
+                ci_col2.metric(
+                    "95% confidence interval",
+                    f"${sim_summary['ci_lower_95']:,.0f} – ${sim_summary['ci_upper_95']:,.0f}",
+                )
+                st.caption(
+                    f"Based on {sim_summary['n_simulations']:,} simulated outcomes, accounting for "
+                    "both churn uncertainty and retention-action uncertainty. The point estimate "
+                    "above (from the metrics higher up) is the mathematical expectation; this range "
+                    "shows how much the actual realized outcome could plausibly vary."
+                )
 
             # --- Diminishing returns chart ---
             # A single budget number doesn't show the shape of the tradeoff.
@@ -274,6 +304,33 @@ if uploaded_file is not None:
                     contrib_df["direction"] = contrib_df["impact"].apply(
                         lambda v: "increases churn risk" if v > 0 else "decreases churn risk"
                     )
+
+                    # --- Customer summary card ---
+                    # A polished, at-a-glance profile — the kind of thing a
+                    # retention rep would actually want to see before making
+                    # a call, rather than a raw row of a dataframe.
+                    customer_row = df.loc[chosen_idx]
+                    risk_prob = customer_row["churn_prob"]
+                    risk_level = "High" if risk_prob >= 0.6 else ("Medium" if risk_prob >= 0.3 else "Low")
+                    risk_color = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}[risk_level]
+                    top_reason = contrib_df.iloc[0]["feature"] if len(contrib_df) else "N/A"
+                    clv_val = customer_row.get("CLV", None)
+                    value_tag = "High-value customer" if (clv_val is not None and clv_val >= df["CLV"].median()) \
+                        else "Standard-value customer"
+
+                    st.markdown(f"### {value_tag} — Row {chosen_idx}")
+                    card_col1, card_col2, card_col3, card_col4 = st.columns(4)
+                    card_col1.metric("Tenure", f"{customer_row.get('tenure', 'N/A')} months")
+                    card_col2.metric("Contract", customer_row.get("Contract", "N/A"))
+                    card_col3.metric("Internet", customer_row.get("InternetService", "N/A"))
+                    card_col4.metric("Monthly charges", f"${customer_row.get('MonthlyCharges', 0):,.0f}")
+
+                    card_col5, card_col6, card_col7, card_col8 = st.columns(4)
+                    card_col5.metric("Churn risk", f"{risk_color} {risk_level}", f"{risk_prob:.0%} probability")
+                    card_col6.metric("Lifetime value", f"${clv_val:,.0f}" if clv_val is not None else "N/A")
+                    card_col7.metric("Recommended action", customer_row.get("recommended_action", "N/A"))
+                    card_col8.metric("Top risk factor", top_reason)
+
 
                     fig, ax = plt.subplots(figsize=(8, 5))
                     colors = ["#d62728" if v > 0 else "#2ca02c" for v in contrib_df["impact"]]
