@@ -315,6 +315,8 @@ else:
         chosen_idx = None
         contrib_df = None
         app_context = None
+        explainer = None
+        transformed_names = None
         with tab_explain:
             st.subheader("Explain a specific customer's prediction")
 
@@ -530,7 +532,11 @@ else:
                 if st.button("Ask") and question:
                     with st.spinner("Thinking..."):
                         try:
-                            answer = ask_question(question, df, groq_client, app_context=app_context, budget=budget)
+                            answer = ask_question(
+                                question, df, groq_client, app_context=app_context, budget=budget,
+                                model=model, explainer=explainer,
+                                feature_cols=FEATURE_COLS, transformed_names=transformed_names,
+                            )
                             st.write(answer)
                         except Exception as e:
                             st.error(f"Couldn't answer that: {e}")

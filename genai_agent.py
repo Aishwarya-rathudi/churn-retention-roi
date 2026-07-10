@@ -132,16 +132,23 @@ def calculate_action_roi(clv: float, success_probability: float, action_cost: fl
     }
 
 
-def lookup_customer_row(df: pd.DataFrame, row_index: int, budget: int = None) -> dict:
+def lookup_customer_row(df: pd.DataFrame, row_index: int, budget: int = None,
+                         model=None, explainer=None, feature_cols: list = None,
+                         transformed_names: list = None) -> dict:
     """
     Looks up a specific customer by row index and reports their churn
-    probability, CLV, expected value, recommended action, and — crucially —
-    whether they fall within the CURRENT retention budget, and their exact
-    rank if not.
+    probability, CLV, expected value, recommended action, rank, and —
+    crucially — whether they fall within the CURRENT retention budget
+    (including the exact expected-value cutoff, if not).
 
     This exists so the agent can answer "why wasn't row X selected?" or
     "what about row X?" for ANY row in the dataset, not just the one
     currently selected in the UI — instead of defaulting to "I don't know."
+
+    If model/explainer/feature_cols/transformed_names are provided, this
+    ALSO computes SHAP risk factors for this specific row on the fly —
+    meaning the agent can explain WHY any customer is at risk, not just
+    the one currently selected in the app's Explainability tab.
     """
     if row_index not in df.index:
         valid_range = f"{df.index.min()}-{df.index.max()}"
@@ -163,13 +170,43 @@ def lookup_customer_row(df: pd.DataFrame, row_index: int, budget: int = None) ->
         if budget is not None:
             result["current_budget"] = budget
             result["within_current_budget"] = rank <= budget
+            sorted_ev = df["expected_value"].sort_values(ascending=False)
+            if budget <= len(sorted_ev):
+                cutoff_value = float(sorted_ev.iloc[budget - 1])
+                result["budget_cutoff_expected_value"] = round(cutoff_value, 2)
             if rank > budget:
                 result["reason_not_selected"] = (
-                    f"Ranked #{rank} by expected value out of {len(df)} customers, "
-                    f"which falls below the current budget cutoff of {budget}."
+                    f"Ranked #{rank} by expected value out of {len(df)} customers. "
+                    f"Under the current budget of {budget}, the cutoff expected value "
+                    f"is ${result.get('budget_cutoff_expected_value', 0):,.2f} — this "
+                    f"customer's expected value of ${result['expected_value']:,.2f} falls "
+                    f"below that, so they were not included. A larger budget or different "
+                    f"cost/effectiveness assumptions could bring them into the target list."
                 )
     if "recommended_action" in df.columns:
         result["recommended_action"] = row["recommended_action"]
+
+    # Optional: compute SHAP risk factors for this specific row on the fly
+    if model is not None and explainer is not None and feature_cols is not None and transformed_names is not None:
+        try:
+            preprocessor = model.named_steps["prep"]
+            row_transformed = preprocessor.transform(df.loc[[row_index], feature_cols])
+            if hasattr(row_transformed, "toarray"):
+                row_transformed = row_transformed.toarray()
+            row_explanation = explainer(row_transformed)
+            shap_vals = row_explanation.values[0]
+            if hasattr(shap_vals, "ndim") and shap_vals.ndim == 2:
+                shap_vals = shap_vals[:, 1]
+
+            factor_df = pd.DataFrame({"feature": transformed_names, "impact": shap_vals})
+            factor_df["abs_impact"] = factor_df["impact"].abs()
+            top_factors = factor_df.sort_values("abs_impact", ascending=False).head(3)
+            result["top_risk_factors"] = [
+                f"{r['feature']} ({'increases' if r['impact'] > 0 else 'decreases'} churn risk)"
+                for _, r in top_factors.iterrows()
+            ]
+        except Exception:
+            pass  # risk factors are a bonus — don't fail the whole lookup if this errors
 
     return result
 
@@ -297,10 +334,31 @@ values.
 If asked about a specific customer or row number — even one that is NOT the
 currently selected customer — ALWAYS call lookup_customer_row for that row
 number. Never respond with "I don't know" about a row number without calling
-this tool first. If the row wasn't selected in the current target list,
-explain why using the rank and budget information the tool returns (e.g.
-"Row 5127 wasn't targeted because it ranked #312 by expected value, below
-the current budget cutoff of 200").
+this tool first.
+
+When explaining why a customer WAS selected, structure your answer clearly,
+e.g.:
+"Row 1306 was selected because:
+- Churn probability: 81%
+- Customer Lifetime Value: $8,412
+- Expected value: $3,876
+- Recommended action: Phone call
+- Ranked 42nd out of 7,043 customers
+- Included because it falls within the current budget of 200 customers
+
+Main risk factors:
+- Month-to-month contract
+- High monthly charges"
+
+When explaining why a customer was NOT selected, use the rank, budget, and
+budget_cutoff_expected_value fields from the tool result to give a precise,
+concrete explanation (not just "it ranked too low") — e.g. state the exact
+cutoff expected value and how this customer's value compares to it, and
+mention that a larger budget or different cost/effectiveness assumptions
+could change the outcome.
+
+If the tool result includes top_risk_factors, always list them as bullet
+points under a short "Main risk factors" heading.
 
 When you do have a tool result, explain it in plain language, but the
 number itself must always come from the tool's output, never from your own
@@ -308,7 +366,9 @@ estimation."""
 
 
 def ask_question(question: str, df: pd.DataFrame, client: Groq = None,
-                  app_context: str = None, budget: int = None) -> str:
+                  app_context: str = None, budget: int = None,
+                  model=None, explainer=None, feature_cols: list = None,
+                  transformed_names: list = None) -> str:
     """
     Agentic Q&A loop: send the question + tool definitions to the model,
     execute any tool calls it makes (against the real dataframe, or via
@@ -330,6 +390,10 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None,
     budget: the current retention budget (number of customers being
     targeted), passed through to lookup_customer_row so the agent can
     explain why a given row was or wasn't included in the current plan.
+
+    model/explainer/feature_cols/transformed_names: optional, passed
+    through to lookup_customer_row so it can compute SHAP risk factors for
+    ANY row asked about, not just the currently selected customer.
     """
     client = client or get_client()
 
@@ -369,7 +433,11 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None,
             elif tool_call.function.name == "calculate_action_roi":
                 result = calculate_action_roi(**args)
             elif tool_call.function.name == "lookup_customer_row":
-                result = lookup_customer_row(df, budget=budget, **args)
+                result = lookup_customer_row(
+                    df, budget=budget, model=model, explainer=explainer,
+                    feature_cols=feature_cols, transformed_names=transformed_names,
+                    **args,
+                )
             else:
                 result = {"error": f"Unknown tool: {tool_call.function.name}"}
 
