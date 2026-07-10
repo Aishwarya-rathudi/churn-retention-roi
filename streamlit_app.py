@@ -9,7 +9,7 @@ Organized into tabs:
   - Churn Prediction: model output, risk distribution
   - ROI Optimizer: action menu, budget slider, diminishing returns, confidence interval
   - Explainability: customer summary card + SHAP explanation
-  - GenAI Assistant: Q&A agent + outreach message generator
+  - Retention Copilot: Q&A agent + outreach message generator
   - Model Performance: ROC/PR/calibration (if evaluate.py has been run)
 
 Run locally:
@@ -87,7 +87,7 @@ else:
 
         tab_overview, tab_churn, tab_roi, tab_explain, tab_agent, tab_monitor = st.tabs([
             "Overview", "Churn Prediction", "ROI Optimizer",
-            "Why This Customer?", "GenAI Assistant", "Model Performance",
+            "Why This Customer?", "Retention Copilot", "Model Performance",
         ])
 
         # =========================================================
@@ -107,7 +107,7 @@ else:
                 1. **Churn Prediction** — see the model's raw risk scores
                 2. **ROI Optimizer** — pick a retention action strategy and a budget
                 3. **Why This Customer?** — see why any individual customer was flagged
-                4. **GenAI Assistant** — ask questions or draft outreach messages
+                4. **Retention Copilot** — ask questions or draft outreach messages
                 5. **Model Performance** — technical evaluation metrics
                 """
             )
@@ -226,12 +226,11 @@ else:
             overlap_pct = overlap / budget * 100 if budget > 0 else 0.0
 
             col1, col2, col3 = st.columns(3)
-            col1.metric("Value-based targeting", f"${smart_ev:,.0f}")
-            col2.metric(
-                "Naive (churn prob only)", f"${naive_ev:,.0f}",
-                delta=f"{pct_improvement:+.1f}% vs. value-based" if naive_ev else None,
-                delta_color="inverse",
+            col1.metric(
+                "Value-based targeting", f"${smart_ev:,.0f}",
+                delta=f"{pct_improvement:+.1f}% more than naive" if naive_ev else None,
             )
+            col2.metric("Naive (churn prob only)", f"${naive_ev:,.0f}")
             col3.metric("Target list overlap", f"{overlap_pct:.0f}%",
                         help="How many of the same customers both strategies would target. "
                              "Lower overlap means the two rankings disagree more.")
@@ -515,6 +514,8 @@ else:
                         st.caption(app_context)
                     st.caption(
                         f"Try: \"Why was row {chosen_idx} selected?\" or "
+                        "\"Why wasn't row 5127 selected?\" (any row number works, "
+                        "not just the one selected above) or "
                         "\"Which contract type has the highest churn rate?\""
                     )
                 else:
@@ -529,7 +530,7 @@ else:
                 if st.button("Ask") and question:
                     with st.spinner("Thinking..."):
                         try:
-                            answer = ask_question(question, df, groq_client, app_context=app_context)
+                            answer = ask_question(question, df, groq_client, app_context=app_context, budget=budget)
                             st.write(answer)
                         except Exception as e:
                             st.error(f"Couldn't answer that: {e}")

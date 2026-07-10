@@ -132,6 +132,48 @@ def calculate_action_roi(clv: float, success_probability: float, action_cost: fl
     }
 
 
+def lookup_customer_row(df: pd.DataFrame, row_index: int, budget: int = None) -> dict:
+    """
+    Looks up a specific customer by row index and reports their churn
+    probability, CLV, expected value, recommended action, and — crucially —
+    whether they fall within the CURRENT retention budget, and their exact
+    rank if not.
+
+    This exists so the agent can answer "why wasn't row X selected?" or
+    "what about row X?" for ANY row in the dataset, not just the one
+    currently selected in the UI — instead of defaulting to "I don't know."
+    """
+    if row_index not in df.index:
+        valid_range = f"{df.index.min()}-{df.index.max()}"
+        return {"error": f"Row {row_index} does not exist in the current dataset (valid range: {valid_range})."}
+
+    row = df.loc[row_index]
+    result = {"row_index": row_index}
+
+    if "churn_prob" in df.columns:
+        result["churn_prob"] = round(float(row["churn_prob"]), 4)
+    if "CLV" in df.columns:
+        result["CLV"] = round(float(row["CLV"]), 2)
+    if "expected_value" in df.columns:
+        result["expected_value"] = round(float(row["expected_value"]), 2)
+        # Rank among all customers by expected value (1 = highest)
+        rank = int((df["expected_value"] > row["expected_value"]).sum() + 1)
+        result["rank_by_expected_value"] = rank
+        result["total_customers"] = len(df)
+        if budget is not None:
+            result["current_budget"] = budget
+            result["within_current_budget"] = rank <= budget
+            if rank > budget:
+                result["reason_not_selected"] = (
+                    f"Ranked #{rank} by expected value out of {len(df)} customers, "
+                    f"which falls below the current budget cutoff of {budget}."
+                )
+    if "recommended_action" in df.columns:
+        result["recommended_action"] = row["recommended_action"]
+
+    return result
+
+
 # Groq uses the OpenAI-compatible tool schema format
 TOOLS = [
     {
@@ -214,6 +256,31 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_customer_row",
+            "description": (
+                "Look up a SPECIFIC customer by their row number/index, returning "
+                "their churn probability, CLV, expected value, recommended action, "
+                "and whether they fall within the current retention budget (and "
+                "their exact rank if not). ALWAYS use this tool when asked about "
+                "a specific row or customer by number — including rows OTHER than "
+                "the currently selected one. Never say 'I don't know' about a row "
+                "number without calling this tool first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "row_index": {
+                        "type": "integer",
+                        "description": "The row number/index of the customer to look up.",
+                    },
+                },
+                "required": ["row_index"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a data analyst assistant for a customer retention system.
@@ -227,12 +294,21 @@ enough information to call a tool (e.g. no CLV or cost figures were
 provided), ask the user for the missing numbers rather than guessing typical
 values.
 
+If asked about a specific customer or row number — even one that is NOT the
+currently selected customer — ALWAYS call lookup_customer_row for that row
+number. Never respond with "I don't know" about a row number without calling
+this tool first. If the row wasn't selected in the current target list,
+explain why using the rank and budget information the tool returns (e.g.
+"Row 5127 wasn't targeted because it ranked #312 by expected value, below
+the current budget cutoff of 200").
+
 When you do have a tool result, explain it in plain language, but the
 number itself must always come from the tool's output, never from your own
 estimation."""
 
 
-def ask_question(question: str, df: pd.DataFrame, client: Groq = None, app_context: str = None) -> str:
+def ask_question(question: str, df: pd.DataFrame, client: Groq = None,
+                  app_context: str = None, budget: int = None) -> str:
     """
     Agentic Q&A loop: send the question + tool definitions to the model,
     execute any tool calls it makes (against the real dataframe, or via
@@ -250,6 +326,10 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None, app_conte
     selected?" or "why email and not a discount?" using the app's actual
     current state, instead of only being able to answer generic aggregate
     questions about the whole dataset.
+
+    budget: the current retention budget (number of customers being
+    targeted), passed through to lookup_customer_row so the agent can
+    explain why a given row was or wasn't included in the current plan.
     """
     client = client or get_client()
 
@@ -288,6 +368,8 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None, app_conte
                 result = calculate_max_discount(**args)
             elif tool_call.function.name == "calculate_action_roi":
                 result = calculate_action_roi(**args)
+            elif tool_call.function.name == "lookup_customer_row":
+                result = lookup_customer_row(df, budget=budget, **args)
             else:
                 result = {"error": f"Unknown tool: {tool_call.function.name}"}
 
