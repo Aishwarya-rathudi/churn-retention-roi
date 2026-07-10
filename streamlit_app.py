@@ -87,7 +87,7 @@ else:
 
         tab_overview, tab_churn, tab_roi, tab_explain, tab_agent, tab_monitor = st.tabs([
             "Overview", "Churn Prediction", "ROI Optimizer",
-            "Explainability", "GenAI Assistant", "Model Performance",
+            "Why This Customer?", "GenAI Assistant", "Model Performance",
         ])
 
         # =========================================================
@@ -106,7 +106,7 @@ else:
                 **How to use this app:**
                 1. **Churn Prediction** — see the model's raw risk scores
                 2. **ROI Optimizer** — pick a retention action strategy and a budget
-                3. **Explainability** — see why any individual customer was flagged
+                3. **Why This Customer?** — see why any individual customer was flagged
                 4. **GenAI Assistant** — ask questions or draft outreach messages
                 5. **Model Performance** — technical evaluation metrics
                 """
@@ -335,6 +335,9 @@ else:
                     )
 
                     # --- Customer summary card ---
+                    # Compact custom HTML instead of st.metric, since metric's
+                    # large number display was too visually heavy for a dense
+                    # profile card with 8 fields.
                     customer_row = df.loc[chosen_idx]
                     risk_prob = customer_row["churn_prob"]
                     risk_level = "High" if risk_prob >= 0.6 else ("Medium" if risk_prob >= 0.3 else "Low")
@@ -344,18 +347,34 @@ else:
                     value_tag = "High-value customer" if (clv_val is not None and clv_val >= df["CLV"].median()) \
                         else "Standard-value customer"
 
-                    st.markdown(f"### {value_tag} — Row {chosen_idx}")
-                    card_col1, card_col2, card_col3, card_col4 = st.columns(4)
-                    card_col1.metric("Tenure", f"{customer_row.get('tenure', 'N/A')} months")
-                    card_col2.metric("Contract", customer_row.get("Contract", "N/A"))
-                    card_col3.metric("Internet", customer_row.get("InternetService", "N/A"))
-                    card_col4.metric("Monthly charges", f"${customer_row.get('MonthlyCharges', 0):,.0f}")
+                    def _card_field(label, value):
+                        return (
+                            f'<div style="padding:4px 0;">'
+                            f'<div style="font-size:0.75rem; color:#888; margin-bottom:1px;">{label}</div>'
+                            f'<div style="font-size:0.95rem; font-weight:600;">{value}</div>'
+                            f'</div>'
+                        )
 
-                    card_col5, card_col6, card_col7, card_col8 = st.columns(4)
-                    card_col5.metric("Churn risk", f"{risk_color} {risk_level}", f"{risk_prob:.0%} probability")
-                    card_col6.metric("Lifetime value", f"${clv_val:,.0f}" if clv_val is not None else "N/A")
-                    card_col7.metric("Recommended action", customer_row.get("recommended_action", "N/A"))
-                    card_col8.metric("Top risk factor", top_reason)
+                    fields = [
+                        ("Tenure", f"{customer_row.get('tenure', 'N/A')} months"),
+                        ("Contract", customer_row.get("Contract", "N/A")),
+                        ("Internet", customer_row.get("InternetService", "N/A")),
+                        ("Monthly charges", f"${customer_row.get('MonthlyCharges', 0):,.0f}"),
+                        ("Churn risk", f"{risk_color} {risk_level} ({risk_prob:.0%})"),
+                        ("Lifetime value", f"${clv_val:,.0f}" if clv_val is not None else "N/A"),
+                        ("Recommended action", customer_row.get("recommended_action", "N/A")),
+                        ("Top risk factor", top_reason),
+                    ]
+
+                    card_html = (
+                        f'<div style="font-size:1rem; font-weight:600; margin-bottom:6px;">'
+                        f'{value_tag} — Row {chosen_idx}</div>'
+                        f'<div style="display:grid; grid-template-columns:repeat(4, 1fr); '
+                        f'gap:2px 16px; border:1px solid #333; border-radius:8px; padding:10px 14px;">'
+                        + "".join(_card_field(label, val) for label, val in fields)
+                        + "</div>"
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
 
                     fig, ax = plt.subplots(figsize=(8, 5))
                     colors = ["#d62728" if v > 0 else "#2ca02c" for v in contrib_df["impact"]]
@@ -378,11 +397,11 @@ else:
         with tab_agent:
             st.subheader("Draft a retention email")
             if chosen_idx is None or contrib_df is None:
-                st.info("Pick a customer in the Explainability tab first.")
+                st.info('Pick a customer in the "Why This Customer?" tab first.')
             elif groq_client is None:
                 st.info("Enter a free Groq API key in the sidebar to generate a message.")
             else:
-                st.caption(f"Drafting for customer at row {chosen_idx} (selected in Explainability tab).")
+                st.caption(f'Drafting for customer at row {chosen_idx} (selected in "Why This Customer?" tab).')
                 if st.button("Generate outreach email"):
                     with st.spinner("Drafting message..."):
                         top_factors = [
