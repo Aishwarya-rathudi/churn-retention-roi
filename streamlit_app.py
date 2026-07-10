@@ -28,7 +28,7 @@ from groq import Groq
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from genai_agent import ask_question, generate_outreach_message
-from action_optimizer import add_action_recommendations, action_menu_summary, ACTIONS
+from action_optimizer import add_action_recommendations, action_menu_summary, ACTIONS, recommend_best_action
 from uncertainty import simulate_revenue_distribution
 
 st.set_page_config(page_title="Churn Intervention Planner", layout="wide")
@@ -151,10 +151,40 @@ else:
         with tab_roi:
             st.subheader("Retention action menu")
             st.caption(
-                "Costs and effectiveness rates below are assumptions — replace "
-                "with real historical campaign data when available."
+                "Costs and effectiveness rates below are assumptions — adjust them "
+                "below to run your own scenario, or replace with real historical "
+                "campaign data when available."
             )
-            st.dataframe(action_menu_summary(), width='stretch', hide_index=True)
+
+            # --- Scenario planning ---
+            # Lets you change cost/effectiveness assumptions (and see the
+            # optimizer respond instantly) instead of only viewing one fixed
+            # scenario. Turns this from a static report into a planning tool.
+            with st.expander("Scenario planning: adjust cost & effectiveness assumptions", expanded=False):
+                st.caption(
+                    "Changes here immediately recompute recommended actions, "
+                    "budget metrics, and charts below."
+                )
+                scenario_actions = {}
+                for action_name, params in ACTIONS.items():
+                    sp_col1, sp_col2 = st.columns(2)
+                    new_cost = sp_col1.number_input(
+                        f"{action_name} — cost ($)", min_value=0.0,
+                        value=float(params["cost"]), step=1.0, key=f"cost_{action_name}",
+                    )
+                    new_eff = sp_col2.slider(
+                        f"{action_name} — effectiveness", min_value=0.0, max_value=1.0,
+                        value=float(params["effectiveness"]), step=0.01, key=f"eff_{action_name}",
+                    )
+                    scenario_actions[action_name] = {"cost": new_cost, "effectiveness": new_eff}
+                if st.button("Reset to default assumptions"):
+                    for action_name, params in ACTIONS.items():
+                        st.session_state[f"cost_{action_name}"] = float(params["cost"])
+                        st.session_state[f"eff_{action_name}"] = float(params["effectiveness"])
+                    st.rerun()
+
+            active_actions = scenario_actions
+            st.dataframe(action_menu_summary(active_actions), width='stretch', hide_index=True)
 
             opt_mode_label = st.radio(
                 "Optimization goal",
@@ -169,7 +199,7 @@ else:
             )
             opt_mode = "max_value" if opt_mode_label.startswith("Maximize total") else "max_roi"
 
-            df = add_action_recommendations(df, ACTIONS, optimization_mode=opt_mode)
+            df = add_action_recommendations(df, active_actions, optimization_mode=opt_mode)
             df = df.sort_values("expected_value", ascending=False)
 
             # --- Budget constraint ---
@@ -209,10 +239,10 @@ else:
             with st.expander("Show confidence interval (Monte Carlo simulation)"):
                 sim_df = smart_targets.copy()
                 sim_df["_effectiveness"] = sim_df["recommended_action"].map(
-                    lambda a: ACTIONS.get(a, {}).get("effectiveness", 0.0)
+                    lambda a: active_actions.get(a, {}).get("effectiveness", 0.0)
                 )
                 sim_df["_cost"] = sim_df["recommended_action"].map(
-                    lambda a: ACTIONS.get(a, {}).get("cost", 0.0)
+                    lambda a: active_actions.get(a, {}).get("cost", 0.0)
                 )
                 sim_summary = simulate_revenue_distribution(
                     sim_df, effectiveness_col="_effectiveness", cost_col="_cost",
@@ -285,6 +315,7 @@ else:
         # =========================================================
         chosen_idx = None
         contrib_df = None
+        app_context = None
         with tab_explain:
             st.subheader("Explain a specific customer's prediction")
 
@@ -301,7 +332,12 @@ else:
                 cat_cols = ["Contract", "InternetService", "PaymentMethod", "tenure_bucket"]
                 cat_names = list(cat_encoder.get_feature_names_out(cat_cols))
                 names = num_names + cat_names
-                explainer = shap.TreeExplainer(classifier)
+                # shap.Explainer (not TreeExplainer) auto-dispatches to the
+                # right algorithm for whichever model won train.py's model
+                # comparison — TreeExplainer alone would break if Logistic
+                # Regression or another non-tree model was selected.
+                background = X_ref_transformed[:min(100, len(X_ref_transformed))]
+                explainer = shap.Explainer(classifier, background)
                 return explainer, names
 
             try:
@@ -324,8 +360,8 @@ else:
                     if hasattr(row_transformed, "toarray"):
                         row_transformed = row_transformed.toarray()
 
-                    shap_vals = explainer.shap_values(row_transformed)
-                    row_shap = shap_vals[0]
+                    row_explanation = explainer(row_transformed)
+                    row_shap = row_explanation.values[0]
 
                     contrib_df = pd.DataFrame({"feature": transformed_names, "impact": row_shap})
                     contrib_df["abs_impact"] = contrib_df["impact"].abs()
@@ -376,6 +412,57 @@ else:
                     )
                     st.markdown(card_html, unsafe_allow_html=True)
 
+                    # --- Action rationale ---
+                    # Shows the FULL comparison across all actions for this
+                    # customer, not just the winner — makes the recommendation
+                    # transparent instead of a black-box label.
+                    rationale = recommend_best_action(
+                        customer_row["churn_prob"], clv_val if clv_val is not None else 0,
+                        active_actions,
+                    )
+                    st.markdown("**Why this action?**")
+                    rationale_rows = []
+                    for action_name, opts in rationale["all_options"].items():
+                        rationale_rows.append({
+                            "action": action_name,
+                            "expected_value": opts["expected_value"],
+                            "roi": opts["roi"],
+                            "chosen": "✅" if action_name == rationale["recommended_action"] else "",
+                        })
+                    rationale_df = pd.DataFrame(rationale_rows).sort_values("expected_value", ascending=False)
+                    st.dataframe(
+                        rationale_df.style.format({"expected_value": "${:,.0f}", "roi": "{:.1f}x"}),
+                        width='stretch', hide_index=True,
+                    )
+                    if rationale["recommended_action"] != "no_action":
+                        st.caption(
+                            f"**{rationale['recommended_action']}** was chosen because it has the "
+                            f"highest expected value (${rationale['expected_value']:,.0f}) among "
+                            f"available interventions, given this customer's churn probability and CLV."
+                        )
+                    else:
+                        st.caption("No action is recommended — every option would be a net loss for this customer.")
+
+                    # --- Build app-state context for the GenAI agent ---
+                    # This is what lets the Q&A agent answer "why was this
+                    # customer selected?" grounded in the app's actual current
+                    # state, instead of only being able to answer generic
+                    # aggregate questions about the whole dataset.
+                    top_shap_factors = ", ".join(
+                        f"{row['feature']} ({row['direction']})"
+                        for _, row in contrib_df.head(3).iterrows()
+                    )
+                    app_context = (
+                        f"Row {chosen_idx} is currently selected in the app. "
+                        f"Churn probability: {customer_row['churn_prob']:.0%}. "
+                        f"CLV: ${clv_val:,.0f}. "
+                        f"Recommended action: {rationale['recommended_action']}. "
+                        f"Expected value of that action: ${rationale['expected_value']:,.2f}. "
+                        f"Reason the action was chosen: it has the highest expected value "
+                        f"among available options given this customer's churn probability and CLV. "
+                        f"Top SHAP factors driving this customer's churn risk: {top_shap_factors}."
+                    )
+
                     fig, ax = plt.subplots(figsize=(8, 5))
                     colors = ["#d62728" if v > 0 else "#2ca02c" for v in contrib_df["impact"]]
                     ax.barh(contrib_df["feature"][::-1], contrib_df["impact"][::-1], color=colors[::-1])
@@ -423,16 +510,26 @@ else:
             if groq_client is None:
                 st.info("Enter a free Groq API key in the sidebar to use the Q&A agent.")
             else:
-                st.caption(
-                    "Try: \"Which contract type has the highest churn rate?\" or "
-                    "\"What's the maximum discount I can give a customer worth $9000 "
-                    "with 60% retention probability and $40 campaign cost?\""
-                )
+                if app_context:
+                    with st.expander("Currently selected customer (used as context for your question)"):
+                        st.caption(app_context)
+                    st.caption(
+                        f"Try: \"Why was row {chosen_idx} selected?\" or "
+                        "\"Which contract type has the highest churn rate?\""
+                    )
+                else:
+                    st.caption(
+                        "Try: \"Which contract type has the highest churn rate?\" or "
+                        "\"What's the maximum discount I can give a customer worth $9000 "
+                        "with 60% retention probability and $40 campaign cost?\" "
+                        "(Pick a customer in the \"Why This Customer?\" tab to also ask "
+                        "questions about that specific customer.)"
+                    )
                 question = st.text_input("Your question")
                 if st.button("Ask") and question:
                     with st.spinner("Thinking..."):
                         try:
-                            answer = ask_question(question, df, groq_client)
+                            answer = ask_question(question, df, groq_client, app_context=app_context)
                             st.write(answer)
                         except Exception as e:
                             st.error(f"Couldn't answer that: {e}")
@@ -454,5 +551,11 @@ else:
 
             if os.path.exists(EVAL_CHART_PATH):
                 st.image(EVAL_CHART_PATH, caption="ROC curve, Precision-Recall curve, and calibration curve")
+                st.caption(
+                    "The calibration curve (right panel) checks whether a customer with "
+                    "'70% predicted churn probability' actually churns about 70% of the "
+                    "time — important here since churn probability is directly multiplied "
+                    "by CLV in the ROI math, so miscalibration would distort every dollar figure."
+                )
             else:
                 st.info("Run `python src/evaluate.py` to generate the ROC/PR/calibration charts.")

@@ -232,7 +232,7 @@ number itself must always come from the tool's output, never from your own
 estimation."""
 
 
-def ask_question(question: str, df: pd.DataFrame, client: Groq = None) -> str:
+def ask_question(question: str, df: pd.DataFrame, client: Groq = None, app_context: str = None) -> str:
     """
     Agentic Q&A loop: send the question + tool definitions to the model,
     execute any tool calls it makes (against the real dataframe, or via
@@ -241,11 +241,29 @@ def ask_question(question: str, df: pd.DataFrame, client: Groq = None) -> str:
     use the calculation tools for any numeric business question instead of
     generating numbers freehand — see calculate_max_discount's docstring
     for why this matters.
+
+    app_context: optional string describing the CURRENT STATE of the app
+    (e.g. "The user currently has Row 5127 selected: 74% churn probability,
+    $10,645 CLV, expected value $4,200, recommended action: email, top SHAP
+    factor: MonthlyCharges"). When provided, this is appended to the system
+    prompt so the agent can answer questions like "why was this customer
+    selected?" or "why email and not a discount?" using the app's actual
+    current state, instead of only being able to answer generic aggregate
+    questions about the whole dataset.
     """
     client = client or get_client()
 
+    system_content = SYSTEM_PROMPT
+    if app_context:
+        system_content += (
+            "\n\nCURRENT APP STATE (use this to answer questions about "
+            "'this customer', 'the selected customer', 'why was this one "
+            "chosen', etc. — these numbers are already computed, don't "
+            "recompute them unless asked to check the math):\n" + app_context
+        )
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": question},
     ]
 

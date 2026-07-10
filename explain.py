@@ -80,11 +80,16 @@ def plot_global_importance(explainer, X_transformed_df, shap_values):
     print(f"Global feature importance chart saved to {GLOBAL_CHART_OUT}")
 
 
-def plot_customer_example(explainer, X_transformed_df, shap_values, df, customer_idx=None):
+def plot_customer_example(base_values, X_transformed_df, shap_values, df, customer_idx=None):
     """
     Picks a high-churn-probability, high-CLV customer by default (the kind
     a retention team would actually care about), and shows a waterfall plot
     of exactly which features pushed their prediction up or down.
+
+    base_values: per-sample expected/base value array from the Explanation
+    object (shap.Explainer gives one base value per sample, unlike
+    TreeExplainer's single scalar — using per-sample values here is correct
+    for both model types).
     """
     if customer_idx is None:
         # Pick a customer worth explaining: high churn risk, high CLV
@@ -92,10 +97,17 @@ def plot_customer_example(explainer, X_transformed_df, shap_values, df, customer
         candidate["_score"] = candidate.get("CLV", 0) * candidate.get("churn_prob", 0.5)
         customer_idx = candidate["_score"].idxmax()
 
+    # customer_idx is a dataframe index label; map it to a positional index
+    # for numpy array indexing into shap_values/base_values.
+    position = df.index.get_loc(customer_idx)
+
+    base_value = base_values[position]
+    base_value = base_value[0] if hasattr(base_value, "__len__") else base_value
+
     plt.figure()
     shap.plots._waterfall.waterfall_legacy(
-        explainer.expected_value,
-        shap_values[customer_idx],
+        base_value,
+        shap_values[position],
         feature_names=X_transformed_df.columns.tolist(),
         max_display=12,
         show=False,
@@ -111,8 +123,23 @@ def main():
     model, X, df = load_model_and_data()
     classifier, X_transformed_df = get_transformed_features(model, X)
 
-    explainer = shap.TreeExplainer(classifier)
-    shap_values = explainer.shap_values(X_transformed_df)
+    # shap.Explainer (not TreeExplainer) auto-dispatches to the right
+    # algorithm for whichever model type was selected by train.py's
+    # comparison — TreeExplainer alone would silently break if Logistic
+    # Regression or another non-tree model won the comparison.
+    background = X_transformed_df.sample(min(100, len(X_transformed_df)), random_state=42)
+    explainer = shap.Explainer(classifier, background)
+    explanation = explainer(X_transformed_df)
+    shap_values = explanation.values
+    base_values = explanation.base_values
+
+    # Some explainer/model combinations return a 3D array (n_samples,
+    # n_features, n_classes) for binary classifiers instead of 2D — take
+    # the positive class (index 1) if so, for consistency downstream.
+    if shap_values.ndim == 3:
+        shap_values = shap_values[:, :, 1]
+    if hasattr(base_values, "ndim") and base_values.ndim == 2:
+        base_values = base_values[:, 1]
 
     # Global importance: mean absolute SHAP value per feature
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
@@ -129,7 +156,7 @@ def main():
     # Add churn_prob to df for picking an interesting example customer
     df = df.copy()
     df["churn_prob"] = model.predict_proba(X)[:, 1]
-    plot_customer_example(explainer, X_transformed_df, shap_values, df)
+    plot_customer_example(base_values, X_transformed_df, shap_values, df)
 
     importance_df.to_csv("data/feature_importance.csv", index=False)
     print("\nFeature importance table saved to data/feature_importance.csv")
