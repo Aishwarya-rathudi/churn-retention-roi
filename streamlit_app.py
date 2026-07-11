@@ -80,7 +80,7 @@ FEATURE_COLS = [
 uploaded_file = st.file_uploader("Upload enriched + featured customer CSV", type="csv")
 
 if uploaded_file is None:
-    st.info("Upload a CSV to get started. Run the pipeline in src/ first to generate one.")
+    st.info("Upload a CSV to get started")
 elif not os.path.exists(MODEL_PATH):
     st.warning("No trained model found at data/model.joblib. Run `python src/train.py` first.")
 else:
