@@ -31,9 +31,9 @@ from genai_agent import ask_question, generate_outreach_message
 from action_optimizer import add_action_recommendations, action_menu_summary, ACTIONS, recommend_best_action
 from uncertainty import simulate_revenue_distribution
 
-st.set_page_config(page_title="Churn Intervention Planner", layout="wide")
+st.set_page_config(page_title="Customer Churn & ROI Optimizer", layout="wide")
 
-st.title("Churn Intervention Planner")
+st.title("Customer Churn & ROI Optimizer")
 st.markdown(
     """
     Upload a customer dataset to get a ranked action plan: who's likely to
@@ -42,15 +42,23 @@ st.markdown(
     """
 )
 
-# --- GenAI agent setup (optional) ---
+# --- Sidebar: how-to guide + GenAI agent setup (optional) ---
 # Free via Groq (https://console.groq.com/keys) — no billing required.
 # Key is only held in this session's memory, never written to disk.
 with st.sidebar:
-    st.header("GenAI agent (optional)")
-    st.caption(
-        "Powers the Q&A agent and outreach message generator. "
-        "Free tier — get a key at console.groq.com/keys"
+    st.header("How to use this app")
+    st.markdown(
+        """
+        1. **Churn Prediction** — see the model's raw risk scores
+        2. **ROI Optimizer** — pick a retention action strategy and a budget
+        3. **Why This Customer?** — see why any individual customer was flagged
+        4. **Retention Copilot** — ask questions or draft outreach messages
+        5. **Model Performance** — technical evaluation metrics
+        """
     )
+
+    st.divider()
+    st.header("GenAI agent (optional)")
     groq_api_key = st.text_input(
         "Groq API key", type="password",
         value=os.environ.get("GROQ_API_KEY", ""),
@@ -100,17 +108,6 @@ else:
             ov_col2.metric("Average churn probability", f"{df['churn_prob'].mean():.1%}")
             if "CLV" in df.columns:
                 ov_col3.metric("Average CLV", f"${df['CLV'].mean():,.0f}")
-
-            st.markdown(
-                """
-                **How to use this app:**
-                1. **Churn Prediction** — see the model's raw risk scores
-                2. **ROI Optimizer** — pick a retention action strategy and a budget
-                3. **Why This Customer?** — see why any individual customer was flagged
-                4. **Retention Copilot** — ask questions or draft outreach messages
-                5. **Model Performance** — technical evaluation metrics
-                """
-            )
 
             if "Contract" in df.columns:
                 st.subheader("Churn rate by contract type")
