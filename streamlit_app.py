@@ -160,6 +160,30 @@ else:
             # Lets you change cost/effectiveness assumptions (and see the
             # optimizer respond instantly) instead of only viewing one fixed
             # scenario. Turns this from a static report into a planning tool.
+            #
+            # IMPORTANT: widgets below are created with ONLY a `key` (no
+            # `value` argument) so their state lives entirely in
+            # st.session_state. Defaults are seeded once via `setdefault`
+            # before the widgets exist. This avoids two problems:
+            #   1. Streamlit forbids writing to a widget's session_state key
+            #      AFTER that widget has been instantiated in the same run —
+            #      so a "reset" button can't overwrite cost_X/eff_X directly
+            #      when clicked (that happens after the widgets already
+            #      exist). The reset flag below is applied on the NEXT run,
+            #      before the widgets are created at all.
+            #   2. Passing both `value=` and a pre-set session_state `key`
+            #      to the same widget triggers a Streamlit warning about
+            #      ambiguous initial state — omitting `value` avoids that.
+            for action_name, params in ACTIONS.items():
+                st.session_state.setdefault(f"cost_{action_name}", float(params["cost"]))
+                st.session_state.setdefault(f"eff_{action_name}", float(params["effectiveness"]))
+
+            if st.session_state.get("_reset_scenario", False):
+                for action_name, params in ACTIONS.items():
+                    st.session_state[f"cost_{action_name}"] = float(params["cost"])
+                    st.session_state[f"eff_{action_name}"] = float(params["effectiveness"])
+                st.session_state["_reset_scenario"] = False
+
             with st.expander("Scenario planning: adjust cost & effectiveness assumptions", expanded=False):
                 st.caption(
                     "Changes here immediately recompute recommended actions, "
@@ -170,17 +194,15 @@ else:
                     sp_col1, sp_col2 = st.columns(2)
                     new_cost = sp_col1.number_input(
                         f"{action_name} — cost ($)", min_value=0.0,
-                        value=float(params["cost"]), step=1.0, key=f"cost_{action_name}",
+                        step=1.0, key=f"cost_{action_name}",
                     )
                     new_eff = sp_col2.slider(
                         f"{action_name} — effectiveness", min_value=0.0, max_value=1.0,
-                        value=float(params["effectiveness"]), step=0.01, key=f"eff_{action_name}",
+                        step=0.01, key=f"eff_{action_name}",
                     )
                     scenario_actions[action_name] = {"cost": new_cost, "effectiveness": new_eff}
                 if st.button("Reset to default assumptions"):
-                    for action_name, params in ACTIONS.items():
-                        st.session_state[f"cost_{action_name}"] = float(params["cost"])
-                        st.session_state[f"eff_{action_name}"] = float(params["effectiveness"])
+                    st.session_state["_reset_scenario"] = True
                     st.rerun()
 
             active_actions = scenario_actions
