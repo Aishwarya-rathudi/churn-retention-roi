@@ -1,4 +1,4 @@
-# Customer Churn Prediction & Retention ROI Optimizer
+# Customer Churn & ROI Optimizer
 
 Predict which customers are about to churn, work out exactly what it's
 worth to save them, and recommend the single best retention action —
@@ -6,10 +6,37 @@ chosen from a real menu of options, backed by exact math, explained per
 customer, and wrapped in a natural-language agent a non-technical user
 can actually talk to.
 
-> **Live demo:** *(add your Streamlit Community Cloud link here once deployed)*
-> **Screenshots:** *(add a few screenshots of the app here — budget slider, SHAP explanation, customer card)*
+> **Live demo:** [your-app-name.streamlit.app](https://churn-retention-roi.streamlit.app/) 
+
+## Screenshots
+
+<!--
+  Replace the four placeholder lines below with real screenshots once
+  captured (see "How to capture these" underneath). Save images into a
+  `screenshots/` folder in the repo root, then reference them like:
+  ![ROI Optimizer](screenshots/roi-optimizer.png)
+-->
+
+| ROI Optimizer — budget slider & diminishing returns | Why This Customer? — SHAP explanation & customer card |
+|---|---|
+| ![ROI Optimizer](screenshots/roi-optimizer.png) | ![Why This Customer](screenshots/why-this-customer.png) |
+
+| Retention Copilot — grounded Q&A | Churn Prediction — risk distribution |
+|---|---|
+| ![Retention Copilot](screenshots/retention-copilot.png) | ![Churn Prediction](screenshots/churn-prediction.png) |
+
+### How to capture these
+1. Run the app locally (`streamlit run app/streamlit_app.py`) or open your deployed link
+2. Upload `featured_telco.csv`, then for each tab:
+   - **ROI Optimizer:** move the budget slider to somewhere mid-range, expand the confidence interval, screenshot the whole tab
+   - **Why This Customer?:** pick a high-risk, high-CLV customer, screenshot the card + SHAP chart + action rationale table together
+   - **Retention Copilot:** ask *"Why was row X selected?"*, screenshot the question + answer
+   - **Churn Prediction:** screenshot the probability distribution chart
+3. Save each as a `.png` into a `screenshots/` folder in your repo root, using the exact filenames referenced above (or update the paths if you name them differently)
+4. Commit and push — GitHub renders these inline automatically
 
 ---
+
 
 ## Table of contents
 - [Business problem](#business-problem)
