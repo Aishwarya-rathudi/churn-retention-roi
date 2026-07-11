@@ -6,7 +6,7 @@ chosen from a real menu of options, backed by exact math, explained per
 customer, and wrapped in a natural-language agent a non-technical user
 can actually talk to.
 
-> **Live demo:** [your-app-name.streamlit.app](https://churn-retention-roi.streamlit.app/) 
+> **Live demo:** [churn-retention-roi.streamlit.app](https://churn-retention-roi.streamlit.app/) 
 
 ## Screenshots
 
