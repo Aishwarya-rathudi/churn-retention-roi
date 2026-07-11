@@ -58,7 +58,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("GenAI agent (optional)")
+    
     groq_api_key = st.text_input(
         "Groq API key", type="password",
         value=os.environ.get("GROQ_API_KEY", ""),
